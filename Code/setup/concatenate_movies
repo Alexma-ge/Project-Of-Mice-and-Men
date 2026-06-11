@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -eu
+
+### Key vars ###
+basedir=/Volumes/INTENSO/Data_Of_Mice_and_Men
+
+for subj in $basedir/sub-*; do
+  subj_id=$(basename "$subj")
+  echo "Processing $subj_id"
+
+  fslmerge -t "$subj/movie_concat.nii.gz" \
+    "$subj/movie_run-1.feat/reg_standard/normalised_filtered_func_data.nii.gz" \
+    "$subj/movie_run-2.feat/reg_standard/normalised_filtered_func_data.nii.gz" \
+    "$subj/movie_run-3.feat/reg_standard/normalised_filtered_func_data.nii.gz" \
+    "$subj/movie_run-4.feat/reg_standard/normalised_filtered_func_data.nii.gz" \
+    "$subj/movie_run-5.feat/reg_standard/normalised_filtered_func_data.nii.gz"
+done
