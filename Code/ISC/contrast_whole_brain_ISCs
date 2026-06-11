@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#$ -j y
+#$ -o /scratch/$HOME/logs
+#$ -N contrastISCs
+#$ -l h_vmem=16G
+#$ -cwd
+
+"""
+Run independent-samples t-tests contrasting whole brain ISCs.
+
+Requires that calc_whole_brain_ISCs.py has been run.
+"""
+
+import os, sys, subprocess
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+from scipy.stats import norm # Additional for z run
+
+# ------------------------------------------------------------------
+# FSL setup
+# ------------------------------------------------------------------
+os.environ["FSLDIR"] = "/Users/alexgenzel/fsl"
+os.environ["PATH"] = "/Users/alexgenzel/fsl/bin:" + os.environ["PATH"]
+os.environ["FSLOUTPUTTYPE"] = "NIFTI_GZ"
+
+# Local imports
+sys.path.append('/Volumes/INTENSO/Data_Of_Mice_and_Men/scripts')
+from utils.nifti import QuickMasker
+
+
+### Key vars ###
+
+# Paths
+basedir = '/Volumes/INTENSO/Data_Of_Mice_and_Men'
+indir = os.path.join(basedir, 'Group', 'ISCs', 'whole_brain')
+
+combis_file = os.path.join(indir, 'ISC_combinations.xlsx')
+ISCs_file = os.path.join(indir, 'ISCs.nii.gz')
+
+# Cluster thresholds to try (-log10 units)
+cluster_thresholds = [3, 4, 5]
+
+# Global variables
+brain_maskfile = os.path.join(indir, 'mask.nii.gz')
+
+# fsldir = os.environ.get('FSLDIR', '/usr/share/fsl-5.0/')  # try to get FSLDIR or take a guess
+# MNI_file = os.path.join(fsldir, 'data', 'standard', 'MNI152_T1_2mm.nii.gz')
+
+MNI_file = '/Users/alexgenzel/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz'
+
+### Custom funcs ###
+
+def do_ttest(A, B, outdir):
+    """
+    Calculate voxelwise one-tailed Welch's t-test for contrast of A > B, and
+    apply cluster correction via FSL.
+
+    Arguments
+    ---------
+    A, B : numpy arrays
+        [nSamples x nVox] arrays containing data for each group
+    outdir : str
+        Path to desired output directory - will create it if it doesn't exist
+
+    Also requires access to global variables `MNI_file`, `masker`, and
+    `cluster_thresholds`
+
+    Doesn't return anything
+    """
+    ## Run test
+    # Calculate difference image
+    mean_diff = A.mean(axis=0) - B.mean(axis=0)
+
+    # Run one-sided t-tests each way
+    t, p = sm.stats.ttest_ind(A, B, alternative='larger', usevar='unequal')[:2]
+
+    # Log transform p
+    logp = -np.log10(p)
+
+    ## Save out
+    # Set outdir
+    os.makedirs(outdir, exist_ok=True)
+
+    # Save images
+    masker.inverse_transform(mean_diff) \
+          .to_filename(os.path.join(outdir, 'mean_diff.nii.gz'))
+
+    masker.inverse_transform(t) \
+          .to_filename(os.path.join(outdir, 'tstat.nii.gz'))
+   
+    masker.inverse_transform(logp) \
+          .to_filename(os.path.join(outdir, 'pstat.nii.gz')) 
+
+    # Cluster correct via easythresh
+    for thresh in cluster_thresholds:
+        cmd = ['easythresh', 'pstat.nii.gz', masker.mask, str(thresh),
+               '0.05', MNI_file, f'{thresh}_pstat', '--mm'] 
+        #subprocess.run(cmd, capture_output=True, check=True, cwd=outdir) # Changed because of error to this:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=outdir)
+
+        if result.returncode != 0:
+            print("easythresh failed")
+            print("Command:", " ".join(cmd))
+            print("STDOUT:", result.stdout)
+            print("STDERR:", result.stderr)
+            raise RuntimeError("easythresh failed")
+
+### Begin ###
+
+## Load data
+print('Loading data...')
+
+# Load combinations, make boolean masks for each set of comparisons
+combis = pd.read_excel(combis_file, sheet_name='combinations')
+
+# Load ISCs
+masker = QuickMasker(brain_maskfile).fit()
+ISCs = np.arctanh(masker.transform(ISCs_file, dtype=np.float32))
+
+# Select within-original and within-scrambled pairings
+isWithinF = combis['group_comparison'] == 'Within-F'
+isWithinUF = combis['group_comparison'] == 'Within-UF'
+
+
+A = ISCs[isWithinF, :]
+B = ISCs[isWithinUF, :]
+
+
+## Run t-tests
+print('Running t-tests...')
+
+do_ttest(A, B, os.path.join(indir, 'Within_F-Within_UF'))
+do_ttest(B, A, os.path.join(indir, 'Within_UF-Within_F'))
+
+
+## Done
+print('\nDone\n')
