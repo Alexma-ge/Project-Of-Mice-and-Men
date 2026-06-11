@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -eu
+
+### Key vars ###
+basedir=/Volumes/INTENSO/Data_Of_Mice_and_Men
+
+mni_maskfile=/Users/alexgenzel/fsl/data/standard/MNI152_T1_2mm_brain.nii.gz
+
+outdir=${basedir}/Group/ISCs/whole_brain
+subjmasks_outfile=${outdir}/subject_masks.nii.gz
+mask_outfile=${outdir}/mask.nii.gz
+
+scans=(movie_run-1 movie_run-2 movie_run-3 movie_run-4 movie_run-5)
+
+### Begin ###
+
+mkdir -p "$outdir"
+
+# Find subject dirs
+#mapfile -t subjdirs < <(find "$basedir" -maxdepth 1 -type d -name "sub-???xxxx" | sort)
+subjdirs=()
+while IFS= read -r line; do
+    subjdirs+=("$line")
+done < <(find "$basedir" -maxdepth 1 -type d -name "sub-???xxxx" | sort)
+
+if [[ ${#subjdirs[@]} -eq 0 ]]; then
+    echo "No subjects found"
+    exit 1
+fi
+
+echo "Found ${#subjdirs[@]} subjects"
+
+# Remove old output if exists
+rm -f "$subjmasks_outfile"
+
+first=1
+
+for subjdir in "${subjdirs[@]}"; do
+    subj=$(basename "$subjdir")
+    echo "Processing $subj"
+
+    for scan in "${scans[@]}"; do
+        infile="$subjdir/${scan}.feat/reg_standard/normalised_filtered_func_data.nii.gz"
+
+        if [[ ! -f "$infile" ]]; then
+            echo "  Missing $scan → skipping"
+            continue
+        fi
+
+        # Safe mktemp (macOS-compatible)
+        tmp=$(mktemp /tmp/tmp.XXXXXX)
+        tmp="${tmp}.nii.gz"
+
+        fslmaths "$infile" -Tstd -bin "$tmp"
+
+        if [[ $first -eq 1 ]]; then
+            # First file initializes the 4D stack
+            cp "$tmp" "$subjmasks_outfile"
+            first=0
+        else
+            fslmerge -t "$subjmasks_outfile" "$subjmasks_outfile" "$tmp"
+        fi
+
+        rm -f "$tmp"
+    done
+done
+
+echo "Computing intersection mask..."
+
+fslmaths "$subjmasks_outfile" -Tmin -mas "$mni_maskfile" "$mask_outfile"
+
+echo -e "\nDone\n"
