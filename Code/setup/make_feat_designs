@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+# Generate FEAT design files from templates
+
+set -eu
+
+
+### Key vars ###
+
+basedir=/Volumes/INTENSO/Data_Of_Mice_and_Men/
+design_dir=$basedir/design_files/
+templates_dir=$design_dir/templates/
+
+#scans=localizer
+#scans=(movie_run-1 movie_run-2 movie_run-3 movie_run-4 movie_run-5)
+
+
+
+### Begin ###
+
+# String for appending design file paths to
+fsf_files=""
+
+# Glob & loop subject directories
+for subjdir in $(find $basedir/ -maxdepth 1 -type d -name "sub-???xxxx" | sort); do
+    subj=$(basename $subjdir)
+    tmp=${subj#sub-}     
+    subjid=${tmp:1:2}
+    
+    # Loop scans
+    for scan in ${scans[@]}; do
+        
+        # Check if FEAT dir already exists, skip if so
+        featdir=$subjdir/${scan}.feat
+        if [[ -d $featdir ]]; then
+            echo "$featdir already exists, skipping"
+            continue
+        fi
+        
+        # Check if input data exists, warn and skip if not
+	scanname=${subj}_task-${scan}_bold.nii
+        indata=$subjdir/func/${scanname}
+        if [[ ! -f $indata ]]; then
+            echo "$indata file missing - skipping"
+            continue
+        fi
+        
+        # Find replace subject ID
+
+	template=$templates_dir/${scan}.fsf
+        fsf=$design_dir/${subj}_${scan}.fsf
+        echo "subj: $subj"
+        echo "subjid: $subjid"	
+
+        sed -e "s/#SUBJECT#/${subj}/g" \
+        -e "s/#SUBJ#/${subjid}/g" \
+        "$template" > "$fsf"        
+		
+        # Append to str
+        fsf_files+="$fsf "
+        
+
+    done
+done
+
+# Echo design files for submitting to cluster
+echo -e "Design files:\n${fsf_files}\n"
+
+        
+        
