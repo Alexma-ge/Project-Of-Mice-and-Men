@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+
+# Transforms normalised_filtered_func_data timeseries from EPI to MNI space
+# Requires that normalise_timeseries.py has been run.
+
+set -eu
+
+### Key vars ###
+
+basedir=/Volumes/INTENSO/Data_Of_Mice_and_Men/
+scans=(movie_run-1 movie_run-2 movie_run-3 movie_run-4 movie_run-5)
+
+### Begin main script ###
+
+# Loop subject directories
+for subjdir in $(find "$basedir" -maxdepth 1 -type d -name "sub-???xxxx" | sort); do
+    subj=$(basename "$subjdir")
+
+    echo -e "\nStarting processing of $subj\n"
+
+    # Loop scans
+    for scan in "${scans[@]}"; do
+        echo "Starting processing of $scan"
+
+        featdir="$subjdir/${scan}.feat"
+        infile="$featdir/normalised_filtered_func_data.nii.gz"
+        premat="$featdir/reg/example_func2highres.mat"
+        warp="$featdir/reg/highres2standard_warp.nii.gz"
+        ref="$featdir/reg/standard.nii.gz"
+
+        outdir="$featdir/reg_standard"
+        outfile="$outdir/normalised_filtered_func_data.nii.gz"
+
+        # Check that files actually exist
+        if [[ ! -d "$featdir" ]]; then
+            echo "$featdir doesn't exist - skipping"
+            continue
+        elif [[ ! -f "$infile" ]]; then
+            echo "$infile doesn't exist - skipping"
+            continue
+        elif [[ ! -f "$premat" ]]; then
+            echo "$premat doesn't exist - skipping"
+            continue
+        elif [[ ! -f "$warp" ]]; then
+            echo "$warp doesn't exist - skipping"
+            continue
+        elif [[ ! -f "$ref" ]]; then
+            echo "$ref doesn't exist - skipping"
+            continue
+        fi
+
+        # Make outdir
+        mkdir -p "$outdir"
+
+        # Apply warp
+        applywarp \
+            -i "$infile" \
+            -o "$outfile" \
+            -r "$ref" \
+            -w "$warp" \
+            --premat="$premat" \
+            --interp=trilinear \
+            --verbose
+
+        echo -e "Done with $subj $scan\n"
+    done
+
+    echo -e "Finished participant $subj\n"
+done
+
+echo -e "\nAll done\n"
