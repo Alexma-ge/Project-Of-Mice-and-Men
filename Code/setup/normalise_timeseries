@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+
+"""
+Normalises filtered_func_data timeseries for ISC pipeline
+
+Performs following steps:
+    1) Converts to % signal change
+    2) Regresses out motion parameters
+
+Pass subject IDs to run as trailing commandline arguments, or omit to run
+everyone.
+"""
+
+import os, sys, glob
+import numpy as np
+
+# Local imports
+sys.path.append('../')
+from utils.nifti import QuickMasker
+
+
+### Key vars ###
+
+# Paths
+basedir = '/Volumes/INTENSO/Data_Of_Mice_and_Men'
+scans = ['movie_run-1', 'movie_run-2', 'movie_run-3', 'movie_run-4', 'movie_run-5']
+
+
+### Begin main script ###
+
+# Take subj IDs from commandline, or glob everyone if not provided
+if len(sys.argv) > 1:
+    if sys.argv[1] in ['-h', '--help']:
+        print(__doc__)
+        sys.exit()
+    else:
+        subjects = sys.argv[1:]
+        subjdirs = [os.path.join(basedir, subj) for subj in subjects]
+else:
+    subjdirs = sorted(glob.glob(os.path.join(basedir, 'sub-0??xxxx')))
+
+# Loop subjdirs
+for subjdir in subjdirs:
+    subj = os.path.basename(subjdir)
+    print(subj)
+
+    for run in scans:
+        print(run)
+        # Set paths
+        featdir = os.path.join(subjdir, f'{run}.feat')
+        infile = os.path.join(featdir, 'filtered_func_data.nii.gz')
+        maskfile = os.path.join(featdir, 'mask.nii.gz')
+        mcparams_file = os.path.join(featdir, 'mc', 'prefiltered_func_data_mcf.par')
+        outfile = os.path.join(featdir, 'normalised_filtered_func_data.nii.gz')
+    
+        # Init masker and then fit to load the mask
+        masker = QuickMasker(maskfile).fit()
+    
+        # Load data
+        data = masker.transform(infile)
+    
+        # Load motion params
+        mcparams = np.loadtxt(mcparams_file)
+    
+        # Convert to % signal change
+        mu = data.mean(axis=0)
+        data = 100 * (data - mu) / mu
+    
+        # Regress out motion params
+        X = np.hstack([np.ones([len(mcparams), 1]), mcparams])
+        B = np.linalg.lstsq(X, data, rcond=None)[0]
+        data_pred = X @ B  # @ = special operator for matrix multiplication
+        data -= data_pred
+    
+        # Save out
+        masker.inverse_transform(data).to_filename(outfile)
+
+print('\nDone\n')
+
