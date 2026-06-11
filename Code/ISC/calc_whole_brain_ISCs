@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+#$ -j y
+#$ -o /scratch/$HOME/logs
+#$ -N calcISCs
+#$ -cwd
+#$ -l h_vmem=24G
+"""
+Run whole-brain intersubject correlations
+
+Requires that timeseries have been transformed to MNI space and whole-brain
+MNI mask has been made. Also requires subject list CSV file with columns for
+the 'Subject' and 'Group'.
+"""
+
+import os, sys, warnings, time
+import numpy as np
+import pandas as pd
+from itertools import combinations
+from collections import OrderedDict
+
+sys.path.append('../')
+sys.path.append('/Volumes/INTENSO/Data_Of_Mice_and_Men/scripts/')
+from utils.nifti import QuickMasker
+
+
+### Key vars ###
+
+# Paths
+basedir = '/Volumes/INTENSO/Data_Of_Mice_and_Men'
+outdir = os.path.join(basedir, 'Group', 'ISCs', 'whole_brain')
+
+subject_file = os.path.join(basedir, 'subject_list.csv')
+
+brain_maskfile = os.path.join(outdir, 'mask.nii.gz')
+
+
+### Custom funcs ###
+
+def vectorised_correlation(X, Y):
+    """
+    Compute voxelwise correlation coefficient between X and Y.
+
+    Arguments
+    ---------
+    X, Y : [nTimepoints x nVoxels] arrays to correlate together
+
+    Returns
+    -------
+    r : [nVoxels, ] vector of voxelwise correlations
+
+    """
+    dX = X - X.mean(axis=0, keepdims=True)
+    dY = Y - Y.mean(axis=0, keepdims=True)
+    numerator = (dX * dY).sum(axis=0)
+    denominator = np.sqrt((dX**2).sum(axis=0) * (dY**2).sum(axis=0))
+    return numerator / denominator 
+
+
+### Begin script ###
+
+start_time = time.time()
+
+# Init masker
+masker = QuickMasker(brain_maskfile).fit()
+
+# Load subject list, sort by group then subject
+subjlist = pd.read_csv(subject_file)
+subjlist.sort_values(by=['Group', 'Subject'], inplace=True)
+
+# Work out combinations. Store in dataframe & save out.
+combis = []
+for i, j in combinations(range(len(subjlist)), 2):
+    subj1 = subjlist.iloc[i]['Subject']
+    group1 = subjlist.iloc[i]['Group']
+
+    subj2 = subjlist.iloc[j]['Subject']
+    group2 = subjlist.iloc[j]['Group']
+
+    if group1 == group2:
+        group_comparison = f'Within-{group1}'
+    else:
+        group_comparison = 'Between'
+
+    d = OrderedDict([('subj1', subj1),
+                     ('subj2', subj2),
+                     ('group1', group1),
+                     ('group2', group2),
+                     ('group_comparison', group_comparison)])
+    combis.append(d)
+
+combis = pd.DataFrame(combis)
+
+with pd.ExcelWriter(os.path.join(outdir, 'ISC_combinations.xlsx')) as writer:
+    combis.to_excel(writer, sheet_name='combinations', index=False)
+    subjlist.to_excel(writer, sheet_name='subjlist', index=False)
+
+
+## Calculate ISCs
+# Pre-allocate array for storing results
+nVox = masker.mask_array.sum()
+nCombis = len(combis)
+ISCs = np.zeros([nCombis, nVox], dtype=np.float32)
+
+# Loop combinations
+prev_subj1 = None
+prev_subj2 = None
+
+for i, row in combis.iterrows():
+    subj1 = row['subj1']
+    group1 = row['group1']
+    subj2 = row['subj2']
+    group2 = row['group2']
+
+    print(f'{i+1}/{len(combis)}: {subj1} ({group1}) - {subj2} ({group2})')
+    sys.stdout.flush()
+
+    # Load data (only if it's a new subject)
+    if subj1 != prev_subj1:
+        infile1 = os.path.join(basedir, subj1, 'movie_concat.nii.gz')
+        data1 = masker.transform(infile1)
+        if np.any(data1.std(axis=0) == 0):
+            warnings.warn(f'Invalid voxels in {subj1}')
+
+    if subj2 != prev_subj2:
+        infile2 = os.path.join(basedir, subj2, 'movie_concat.nii.gz')
+        data2 = masker.transform(infile2)
+        if np.any(data2.std(axis=0) == 0):
+            warnings.warn(f'Invalid voxels in {subj2}')
+
+    
+
+    
+    # Correlate
+    try:
+        ISCs[i,:] = vectorised_correlation(data1, data2)
+    except Exception as e:
+        warnings.warn('ISC calculation failed')
+        print(e)
+        ISCs[i,:] = np.nan
+
+    # Update previous subj IDs
+    prev_subj1 = subj1
+    prev_subj2 = subj2
+
+# Calculate grand mean
+grand_mean_ISCs = ISCs.mean(axis=0) 
+
+
+## Save
+print('Saving...')
+
+masker.inverse_transform(ISCs) \
+      .to_filename(os.path.join(outdir, 'ISCs.nii.gz'))  
+
+
+masker.inverse_transform(grand_mean_ISCs) \
+      .to_filename(os.path.join(outdir, 'ISC_grand_mean.nii.gz'))
+
+
+
+# Done
+finish_time = time.time()
+print('\nDone\n')
+print(f'Computation time {finish_time - start_time} s\n')
